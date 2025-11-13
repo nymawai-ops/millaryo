@@ -50,15 +50,15 @@ def extraer_iphones(html: str):
     """
     Extrae modelos de iPhone y su precio a partir del texto de la página.
     Busca patrones como:
-        'Apple iPhone 13 128 GB ... S/ 1499.00'
+        'iPhone 13 128 GB ... S/ 1479.00'
     Devuelve una lista de:
-        {"name": "iPhone 13 128 GB", "price": 1499.0}
+        {"name": "iPhone 13 128 GB", "price": 1479.0}
     """
     soup = BeautifulSoup(html, "html.parser")
     text = soup.get_text("\n", strip=True)
 
-    # Captura líneas con 'Apple ... iPhone ... S/ precio'
-    patron = re.compile(r"(Apple[^\n]*?iPhone[^\n]*?)S/\s*([\d\.]+)")
+    # Captura líneas con 'iPhone ... S/ precio'
+    patron = re.compile(r"(iPhone[^\n]*?)S/\s*([\d\.]+)")
 
     ofertas = []
 
@@ -72,12 +72,10 @@ def extraer_iphones(html: str):
             continue
 
         if precio < 10:
-            # Ignorar cosas tipo 0.0, 1.0, etc.
+            # ignorar cosas como S/ 0.00, S/ 1.00, etc.
             continue
 
-        # Limpiamos el nombre del modelo: quitamos "Apple" y "Desde"
         nombre = segmento
-        nombre = nombre.replace("Apple", "")
         nombre = nombre.replace("Desde", "")
         nombre = re.sub(r"\s+", " ", nombre).strip()
 
@@ -192,9 +190,6 @@ def monitorear():
 
 
 # ========= RUTAS WEB PARA RENDER =========
-
-app = Flask(__name__)
-
 
 @app.route("/")
 def home():
