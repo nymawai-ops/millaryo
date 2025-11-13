@@ -59,7 +59,9 @@ def obtener_precio_minimo():
 
     precios = obtener_precios(resp.text)
     if not precios:
-        raise ValueError("No se encontraron precios en la página (puede que se carguen con JS).")
+        raise ValueError(
+            "No se encontraron precios en la página (puede que se carguen con JS)."
+        )
 
     return min(precios), precios
 
@@ -88,3 +90,19 @@ def monitorear():
                     f"📉 ¡Bajó el precio!\n\n"
                     f"URL: {URL}\n"
                     f"Precio mínimo encontrado: S/ {precio_minimo}\n"
+                    f"Umbral configurado: S/ {PRECIO_UMBRAL}"
+                )
+                ultimo_aviso = precio_minimo
+
+        except Exception as e:
+            print("Error en monitorear:", e)
+            try:
+                enviar_mensaje(f"❌ Error al revisar precios: {e}")
+            except Exception:
+                pass
+
+        time.sleep(INTERVALO_SEGUNDOS)
+
+
+if __name__ == "__main__":
+    monitorear()
