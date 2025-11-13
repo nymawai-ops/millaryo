@@ -3,7 +3,6 @@ import time
 import re
 import requests
 from bs4 import BeautifulSoup
-from telegram import Bot
 
 TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT_ID = int(os.environ["CHAT_ID"])
@@ -11,7 +10,6 @@ URL = os.environ.get("URL_CLARO", "https://www.tiendaclaro.pe/")
 PRECIO_UMBRAL = float(os.environ.get("PRECIO_UMBRAL", "100.0"))
 INTERVALO_SEGUNDOS = int(os.environ.get("INTERVALO_SEGUNDOS", "1800"))
 
-bot = Bot(token=TELEGRAM_TOKEN)
 
 def obtener_precios(html: str):
     soup = BeautifulSoup(html, "html.parser")
@@ -35,7 +33,13 @@ def obtener_precio_minimo():
     return min(precios), precios
 
 def enviar_mensaje(msg: str):
-    bot.send_message(chat_id=CHAT_ID, text=msg)
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
+    data = {
+        "chat_id": CHAT_ID,
+        "text": msg
+    }
+    resp = requests.post(url, data=data, timeout=10)
+    resp.raise_for_status()
 
 def monitorear():
     ultimo = None
