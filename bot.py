@@ -12,25 +12,20 @@ TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
 CHAT_ID = int(os.environ["CHAT_ID"])
 URL = os.environ.get("URL_CLARO", "https://www.tiendaclaro.pe/apple")
 
-# Detectar bajadas fuertes:
-# - ALERT_PCT_DROP: porcentaje mínimo de caída (0.3 = 30%)
-# - ALERT_MIN_DROP: caída mínima en soles
-ALERT_PCT_DROP = float(os.environ.get("ALERT_PCT_DROP", "0.3"))
-ALERT_MIN_DROP = float(os.environ.get("ALERT_MIN_DROP", "300.0"))
-
-INTERVALO_SEGUNDOS = int(os.environ.get("INTERVALO_SEGUNDOS", "1800"))  # 30 min
+# Cada cuánto revisar (en segundos)
+INTERVALO_SEGUNDOS = int(os.environ.get("INTERVALO_SEGUNDOS", "1800"))  # 30 min por defecto
 
 app = Flask(__name__)
 
-# Estado para /status
+# Estado para consulta desde /status
 estado = {
     "ultimo_error": None,
     "ultimo_check_ts": None,
-    "ultimos_precios": {},  # name -> price
+    "ultimos_precios": [],  # lista de precios
 }
 
-# Historial en memoria: modelo -> último precio visto
-last_prices = {}
+# Historial simple en memoria: última lista de precios (ordenada)
+last_prices = None
 
 
 def enviar_mensaje(msg: str):
@@ -46,52 +41,39 @@ def enviar_mensaje(msg: str):
     resp.raise_for_status()
 
 
-def extraer_iphones(html: str):
+def extraer_precios(html: str):
     """
-    Extrae modelos de iPhone y su precio a partir del texto de la página.
-    Busca patrones como:
-        'iPhone 13 128 GB ... S/ 1479.00'
-    Devuelve una lista de:
-        {"name": "iPhone 13 128 GB", "price": 1479.0}
+    Extrae TODOS los precios tipo 'S/ 1499.00' del HTML.
+    Devuelve una lista de floats (sin repetir, ordenada).
     """
     soup = BeautifulSoup(html, "html.parser")
     text = soup.get_text("\n", strip=True)
 
-    # Captura líneas con 'iPhone ... S/ precio'
-    patron = re.compile(r"(iPhone[^\n]*?)S/\s*([\d\.]+)")
-
-    ofertas = []
+    # Buscar cualquier 'S/ <numero>'
+    patron = re.compile(r"S/\s*([\d\.]+)")
+    precios = []
 
     for match in patron.finditer(text):
-        segmento = match.group(1)
-        precio_str = match.group(2)
-
+        valor = match.group(1)
         try:
-            precio = float(precio_str)
+            precio = float(valor)
         except ValueError:
             continue
 
+        # Filtrar basura (0 o muy bajos)
         if precio < 10:
-            # ignorar cosas como S/ 0.00, S/ 1.00, etc.
             continue
 
-        nombre = segmento
-        nombre = nombre.replace("Desde", "")
-        nombre = re.sub(r"\s+", " ", nombre).strip()
+        precios.append(precio)
 
-        ofertas.append(
-            {
-                "name": nombre,
-                "price": precio,
-            }
-        )
-
-    return ofertas
+    # Quitar duplicados y ordenar
+    precios_unicos = sorted(set(precios))
+    return precios_unicos
 
 
-def obtener_ofertas_iphones():
+def obtener_precios():
     """
-    Descarga la página y devuelve las ofertas de iPhones (modelo + precio).
+    Descarga la página y devuelve la lista de precios encontrados.
     """
     resp = requests.get(
         URL,
@@ -100,89 +82,58 @@ def obtener_ofertas_iphones():
     )
     resp.raise_for_status()
 
-    ofertas = extraer_iphones(resp.text)
-    if not ofertas:
-        raise ValueError("No se encontraron iPhones con precio en la página.")
+    precios = extraer_precios(resp.text)
+    if not precios:
+        raise ValueError("No se encontraron precios en la página.")
 
-    return ofertas
+    return precios
 
 
 def monitorear():
     """
     Bucle infinito que revisa la página cada cierto tiempo
-    y manda alerta cuando detecta una bajada fuerte de precio
-    en cualquier modelo de iPhone.
+    y solo envía mensaje a Telegram cuando la lista de precios
+    cambia respecto a la revisión anterior.
     """
     global last_prices
 
     try:
-        enviar_mensaje(
-            "🚀 Bot de iPhones iniciado (detección de bajadas fuertes de precio)."
-        )
+        enviar_mensaje("🚀 Bot de precios iniciado (envía lista solo si cambian).")
     except Exception as e:
         print("Error enviando mensaje inicial:", e)
 
     while True:
         try:
-            ofertas = obtener_ofertas_iphones()
+            precios = obtener_precios()
 
             ahora = time.time()
             estado["ultimo_check_ts"] = ahora
             estado["ultimo_error"] = None
-            estado["ultimos_precios"] = {o["name"]: o["price"] for o in ofertas}
+            estado["ultimos_precios"] = precios
 
-            print("[DEBUG] Ofertas iPhone encontradas:")
-            for o in ofertas:
-                print(f" - {o['name']} | S/ {o['price']}")
+            print("[DEBUG] Precios encontrados:", precios)
 
-            bajadas = []
+            # Representamos la lista como tupla para compararla fácilmente
+            precios_tuple = tuple(precios)
 
-            for o in ofertas:
-                nombre = o["name"]
-                precio_nuevo = o["price"]
-                precio_anterior = last_prices.get(nombre)
+            # Si es la primera vez o si cambió la lista, enviamos alerta
+            if last_prices is None or precios_tuple != last_prices:
+                last_prices = precios_tuple
 
-                if precio_anterior is not None:
-                    drop_abs = precio_anterior - precio_nuevo
-                    drop_pct = drop_abs / precio_anterior if precio_anterior > 0 else 0.0
-
-                    if drop_abs >= ALERT_MIN_DROP or drop_pct >= ALERT_PCT_DROP:
-                        bajadas.append(
-                            {
-                                "name": nombre,
-                                "old": precio_anterior,
-                                "new": precio_nuevo,
-                                "drop_abs": drop_abs,
-                                "drop_pct": drop_pct,
-                            }
-                        )
-
-                # Actualizar historial siempre
-                last_prices[nombre] = precio_nuevo
-
-            if bajadas:
-                lineas = []
-                for b in bajadas:
-                    pct = round(b["drop_pct"] * 100, 1)
-                    lineas.append(
-                        f"- {b['name']}: de S/ {b['old']} a S/ {b['new']} "
-                        f"(bajó S/ {round(b['drop_abs'],1)} ≈ {pct}%)"
-                    )
-
+                lineas = [f"S/ {p}" for p in precios]
                 mensaje = (
-                    "📉 ¡Bajada fuerte de precio en iPhones!\n\n"
-                    f"URL: {URL}\n"
-                    f"Condición: caída ≥ S/ {ALERT_MIN_DROP} "
-                    f"o ≥ {int(ALERT_PCT_DROP * 100)}%\n\n"
-                    + "\n".join(lineas)
+                    "📊 Lista de precios actualizados en la página:\n\n"
+                    f"URL: {URL}\n\n" +
+                    "\n".join(lineas)
                 )
+
                 enviar_mensaje(mensaje)
 
         except Exception as e:
             print("Error en monitorear:", e)
             estado["ultimo_error"] = str(e)
             try:
-                enviar_mensaje(f"❌ Error al revisar iPhones: {e}")
+                enviar_mensaje(f"❌ Error al revisar precios: {e}")
             except Exception:
                 pass
 
@@ -193,7 +144,7 @@ def monitorear():
 
 @app.route("/")
 def home():
-    return "Bot de iPhones Claro corriendo 🔍 (bajadas fuertes)", 200
+    return "Bot de precios Claro corriendo 🔍 (lista solo si cambian)", 200
 
 
 @app.route("/status")
